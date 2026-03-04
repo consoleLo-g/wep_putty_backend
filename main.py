@@ -7,4 +7,4 @@ app.include_router(health_router)
 
 @app.get("/")
 def root():
-    return{"message": "web_putty backend is running"}
+    return{"message": "CICD Test"}
