@@ -1,0 +1,22 @@
+name: WebPutty Backend CI/CD
+
+on:
+push:
+branches: -main
+
+jobs:
+build-and-deploy:
+runs-on: ubuntu-latest
+
+steps:
+  # Pull
+  - name: Checkout code
+    uses: actions/checkout@v4
+
+  # Build
+  - name: Build Docker Image
+    run: docker build -t web-putty-backend .
+
+  # Trigger Hooks
+  - name: Trigger Render Deployment
+    run: curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
