@@ -12,14 +12,12 @@ router = APIRouter(prefix="/terminal", tags=["Terminal"])
 async def terminal_ws(websocket: WebSocket):
 
     await websocket.accept()
-
     ssh = None
 
     try:
-
-        # receive credentials
-        data = await websocket.receive_text()
-        credentials = SSHCredentials(**json.loads(data))
+        # Receive credentials
+        init_data = json.loads(await websocket.receive_text())
+        credentials = SSHCredentials(**init_data)
 
         ssh = SSHSession(
             credentials.host,
@@ -29,17 +27,31 @@ async def terminal_ws(websocket: WebSocket):
 
         await ssh.connect()
 
+        await websocket.send_json({
+            "type": "connected",
+            "message": "SSH session established"
+        })
+
         async def read_from_ssh():
             while True:
                 data = await ssh.read()
                 if not data:
                     break
-                await websocket.send_text(data)
+
+                await websocket.send_json({
+                    "type": "output",
+                    "data": data
+                })
 
         async def write_to_ssh():
             while True:
-                data = await websocket.receive_text()
-                ssh.write(data)
+                msg = json.loads(await websocket.receive_text())
+
+                if msg["type"] == "input":
+                    ssh.write(msg["data"])
+
+                elif msg["type"] == "resize":
+                    ssh.resize(msg["cols"], msg["rows"])
 
         await asyncio.gather(
             read_from_ssh(),
@@ -47,12 +59,14 @@ async def terminal_ws(websocket: WebSocket):
         )
 
     except Exception as e:
-
         logger.error(str(e))
-        await websocket.send_text(f"Error: {str(e)}")
+
+        await websocket.send_json({
+            "type": "error",
+            "message": str(e)
+        })
 
     finally:
-
         if ssh:
             await ssh.close()
 
