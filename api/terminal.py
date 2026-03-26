@@ -21,6 +21,7 @@ async def terminal_ws(websocket: WebSocket):
 
         ssh = SSHSession(
             credentials.host,
+            credentials.port,
             credentials.username,
             credentials.password
         )
@@ -33,19 +34,29 @@ async def terminal_ws(websocket: WebSocket):
         })
 
         async def read_from_ssh():
-            while True:
-                data = await ssh.read()
-                if not data:
-                    break
+            try:
+                while True:
+                    data = await ssh.process.stdout.read(1024)
 
-                await websocket.send_json({
-                    "type": "output",
-                    "data": data
-                })
+                    if not data:
+                        break
+
+                    if isinstance(data, bytes):
+                        data = data.decode(errors="ignore")
+
+                    await websocket.send_json({
+                        "type": "output",
+                        "data": data
+                    })
+
+            except Exception as e:
+                print("READ ERROR:", e)
 
         async def write_to_ssh():
             while True:
-                msg = json.loads(await websocket.receive_text())
+                raw = await websocket.receive_text()
+                print(raw)
+                msg = json.loads(raw)
 
                 if msg["type"] == "input":
                     ssh.write(msg["data"])
