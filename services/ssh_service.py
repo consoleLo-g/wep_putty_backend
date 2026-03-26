@@ -6,8 +6,9 @@ from core.config import settings
 
 class SSHSession:
 
-    def __init__(self, host, username, password):
+    def __init__(self, host,port, username, password):
         self.host = host
+        self.port = port
         self.username = username
         self.password = password
         self.conn = None
@@ -20,6 +21,7 @@ class SSHSession:
         self.conn = await asyncio.wait_for(
             asyncssh.connect(
                 self.host,
+                port=self.port,
                 username=self.username,
                 password=self.password,
             ),
@@ -27,17 +29,23 @@ class SSHSession:
         )
 
         self.process = await self.conn.create_process(
-            term_type="xterm",
-            term_size=(80, 24)
+            term_type="xterm-256color",
+            encoding="utf-8"
         )
 
         logger.info("SSH session started")
 
-    async def read(self):
-        return await self.process.stdout.read(1024)
+    # async def read(self):
+    #     return await self.process.stdout.read(1024)
 
     def write(self, data):
-        self.process.stdin.write(data)
+        if self.process:
+            self.process.stdin.write(data)
+            # self.process.stdin.flush()
+
+    def resize(self, cols: int, rows: int):
+        if self.process:
+            self.process.set_terminal_size(cols, rows)
 
     async def close(self):
 
