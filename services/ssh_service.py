@@ -44,8 +44,8 @@ class SSHSession:
             # self.process.stdin.flush()
 
     def resize(self, cols: int, rows: int):
-        if self.process:
-            self.process.set_terminal_size(cols, rows)
+        if self.process and self.process.channel:
+            self.process.channel.set_terminal_size(cols, rows)
 
     async def close(self):
 

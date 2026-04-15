@@ -62,7 +62,10 @@ async def terminal_ws(websocket: WebSocket):
                     ssh.write(msg["data"])
 
                 elif msg["type"] == "resize":
-                    ssh.resize(msg["cols"], msg["rows"])
+                    try:
+                        ssh.resize(msg["cols"], msg["rows"])
+                    except Exception as e:
+                        logger.error(f"Resize error: {e}")
 
         await asyncio.gather(
             read_from_ssh(),
