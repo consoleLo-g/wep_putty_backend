@@ -1,87 +1,172 @@
-from fastapi import APIRouter, WebSocket
-from services.ssh_service import SSHSession
-from schemas.ssh import SSHCredentials
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from core.logger import logger
+from core.security import verify_token
+from core.session_manager import session_manager
+from core.config import settings
+
+from services.ssh_service import SSHSession
+
 import asyncio
 import json
 
-router = APIRouter(prefix="/terminal", tags=["Terminal"])
+router = APIRouter(
+    prefix="/terminal",
+    tags=["Terminal"]
+)
 
 
 @router.websocket("/ws")
 async def terminal_ws(websocket: WebSocket):
-
     await websocket.accept()
-    ssh = None
 
-    try:
-        # Receive credentials
-        init_data = json.loads(await websocket.receive_text())
-        credentials = SSHCredentials(**init_data)
+    # -------------------------
+    # AUTH CHECK
+    # -------------------------
+    token = websocket.query_params.get("token")
 
-        ssh = SSHSession(
-            credentials.host,
-            credentials.port,
-            credentials.username,
-            credentials.password
-        )
-
-        await ssh.connect()
-
-        await websocket.send_json({
-            "type": "connected",
-            "message": "SSH session established"
-        })
-
-        async def read_from_ssh():
-            try:
-                while True:
-                    data = await ssh.process.stdout.read(1024)
-
-                    if not data:
-                        break
-
-                    if isinstance(data, bytes):
-                        data = data.decode(errors="ignore")
-
-                    await websocket.send_json({
-                        "type": "output",
-                        "data": data
-                    })
-
-            except Exception as e:
-                print("READ ERROR:", e)
-
-        async def write_to_ssh():
-            while True:
-                raw = await websocket.receive_text()
-                print(raw)
-                msg = json.loads(raw)
-
-                if msg["type"] == "input":
-                    ssh.write(msg["data"])
-
-                elif msg["type"] == "resize":
-                    try:
-                        ssh.resize(msg["cols"], msg["rows"])
-                    except Exception as e:
-                        logger.error(f"Resize error: {e}")
-
-        await asyncio.gather(
-            read_from_ssh(),
-            write_to_ssh()
-        )
-
-    except Exception as e:
-        logger.error(str(e))
-
+    if not token or not verify_token(token):
         await websocket.send_json({
             "type": "error",
-            "message": str(e)
+            "message": "Unauthorized"
         })
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            msg = json.loads(raw)
+
+            msg_type = msg.get("type")
+
+            # --------------------------------
+            # CREATE SSH SESSION
+            # --------------------------------
+            if msg_type == "create":
+
+                if session_manager.count() >= settings.MAX_SSH_SESSIONS:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Max SSH sessions reached"
+                    })
+                    continue
+
+                payload = msg["payload"]
+
+                ssh = SSHSession(
+                    payload["host"],
+                    payload["port"],
+                    payload["username"],
+                    payload["password"]
+                )
+
+                await ssh.connect()
+
+                session_id = session_manager.create(ssh)
+
+                asyncio.create_task(
+                    stream_output(
+                        websocket,
+                        ssh,
+                        session_id
+                    )
+                )
+
+                await websocket.send_json({
+                    "type": "created",
+                    "session_id": session_id
+                })
+
+            # --------------------------------
+            # INPUT
+            # --------------------------------
+            elif msg_type == "input":
+                ssh = session_manager.get(
+                    msg["session_id"]
+                )
+
+                if ssh:
+                    ssh.write(
+                        msg["data"]
+                    )
+
+            # --------------------------------
+            # RESIZE
+            # --------------------------------
+            elif msg_type == "resize":
+                ssh = session_manager.get(
+                    msg["session_id"]
+                )
+
+                if ssh:
+                    ssh.resize(
+                        msg["cols"],
+                        msg["rows"]
+                    )
+
+            # --------------------------------
+            # CLOSE ONE SESSION
+            # --------------------------------
+            elif msg_type == "close":
+                session_id = msg["session_id"]
+
+                ssh = session_manager.get(
+                    session_id
+                )
+
+                if ssh:
+                    await ssh.close()
+
+                    session_manager.remove(
+                        session_id
+                    )
+
+                    await websocket.send_json({
+                        "type": "closed",
+                        "session_id": session_id
+                    })
+
+    except WebSocketDisconnect:
+        logger.info("Client disconnected")
+
+    except Exception as e:
+        logger.error(
+            f"WebSocket error: {e}"
+        )
 
     finally:
-        if ssh:
-            await ssh.close()
+        # DO NOT cleanup sessions here
+        # allows browser refresh recovery
+        try:
+            await websocket.close()
+        except:
+            pass
 
-        await websocket.close()
+
+async def stream_output(
+    websocket: WebSocket,
+    ssh: SSHSession,
+    session_id: str
+):
+    try:
+        while True:
+            data = await ssh.process.stdout.read(1024)
+
+            if not data:
+                break
+
+            if isinstance(data, bytes):
+                data = data.decode(
+                    errors="ignore"
+                )
+
+            await websocket.send_json({
+                "type": "output",
+                "session_id": session_id,
+                "data": data
+            })
+
+    except Exception as e:
+        logger.error(
+            f"Stream error {session_id}: {e}"
+        )
